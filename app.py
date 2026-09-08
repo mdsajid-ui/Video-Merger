@@ -13,9 +13,23 @@ import subprocess
 from datetime import datetime
 
 import streamlit as st
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+def get_ffmpeg_binary():
+    cmd = shutil.which("ffmpeg")
+    if cmd:
+        return cmd
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    return "ffmpeg"
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -406,9 +420,10 @@ if uploaded_files:
 
                     # Check strategy
                     used_fast = False
+                    ffmpeg_bin = get_ffmpeg_binary()
                     if "Instant" in mode:
                         cmd = [
-                            "ffmpeg", "-y",
+                            ffmpeg_bin, "-y",
                             "-f", "concat",
                             "-safe", "0",
                             "-i", list_path,
@@ -431,7 +446,7 @@ if uploaded_files:
                             scale_opt = "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2"
 
                         cmd = [
-                            "ffmpeg", "-y",
+                            ffmpeg_bin, "-y",
                             "-f", "concat",
                             "-safe", "0",
                             "-i", list_path,
