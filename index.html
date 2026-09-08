@@ -632,23 +632,26 @@ function clearError(){
   errorBox.innerHTML = '';
 }
 
+function makeEngine(){
+  const inst = new FFmpeg();
+  inst.on('progress', ({ progress }) => {
+    const pct = Math.min(100, Math.max(0, Math.round(progress * 100)));
+    barFill.style.width = pct + '%';
+    statusPct.textContent = pct + '%';
+  });
+  inst.on('log', ({ message }) => {
+    if(!message) return;
+    logBuffer.push(message);
+    if(logBuffer.length > 400) logBuffer.shift();
+    if(message.length < 90) statusText.textContent = message;
+  });
+  return inst;
+}
+
 async function loadFFmpeg(){
   if(ffmpeg) return ffmpeg;
   if(ffmpegLoading) return ffmpegLoading;
   ffmpegLoading = (async () => {
-    ffmpeg = new FFmpeg();
-    ffmpeg.on('progress', ({ progress }) => {
-      const pct = Math.min(100, Math.max(0, Math.round(progress * 100)));
-      barFill.style.width = pct + '%';
-      statusPct.textContent = pct + '%';
-    });
-    ffmpeg.on('log', ({ message }) => {
-      if(!message) return;
-      logBuffer.push(message);
-      if(logBuffer.length > 400) logBuffer.shift();
-      if(message.length < 90) statusText.textContent = message;
-    });
-
     // @ffmpeg/ffmpeg itself spins up its own worker (separate from the
     // core/wasm files below) directly from its package URL. Left as-is,
     // that's a cross-origin Worker script and browsers block it outright.
@@ -659,10 +662,11 @@ async function loadFFmpeg(){
 
     const wantsMulti = detectEngineMode() === 'multi';
     if(wantsMulti){
+      const multiEngine = makeEngine();
       try {
         statusText.textContent = 'Loading multi-core engine…';
         const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-        await ffmpeg.load({
+        await multiEngine.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
           workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
@@ -670,24 +674,38 @@ async function loadFFmpeg(){
         });
         engineMode = 'multi';
         updateEngineBadge('multi', 'Multi-core engine active');
+        ffmpeg = multiEngine;
         return ffmpeg;
       } catch (e) {
         console.warn('Multi-core engine failed to load, falling back to single-core:', e);
+        try { multiEngine.terminate(); } catch(_) {}
       }
     }
 
+    // Fresh instance for the single-core attempt — a FFmpeg() object whose
+    // .load() already failed once cannot be reliably reloaded in place.
+    const singleEngine = makeEngine();
     statusText.textContent = 'Loading engine…';
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-    await ffmpeg.load({
+    await singleEngine.load({
       coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
       wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
       classWorkerURL,
     });
     engineMode = 'single';
     updateEngineBadge('single', 'Single-core engine active');
+    ffmpeg = singleEngine;
     return ffmpeg;
   })();
-  return ffmpegLoading;
+  try {
+    return await ffmpegLoading;
+  } catch (e) {
+    // Reset so the next attempt starts clean instead of returning a
+    // half-loaded engine or a promise that already rejected.
+    ffmpeg = null;
+    ffmpegLoading = null;
+    throw e;
+  }
 }
 
 mergeBtn.addEventListener('click', async () => {
