@@ -1,2 +1,65 @@
-/*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */
-let coepCredentialless=!1;"undefined"==typeof window?(self.addEventListener("install",(()=>self.skipWaiting())),self.addEventListener("activate",(e=>e.waitUntil(self.clients.claim()))),self.addEventListener("message",(e=>{e.data&&("deregister"===e.data.type?self.registration.unregister().then((()=>self.clients.matchAll())).then((e=>{e.forEach((e=>e.navigate(e.url)))})):"coepCredentialless"===e.data.type&&(coepCredentialless=e.data.value))})),self.addEventListener("fetch",(function(e){const o=e.request;if("only-if-cached"===o.cache&&"same-origin"!==o.mode)return;const s=coepCredentialless&&"no-cors"===o.mode?new Request(o,{credentials:"omit"}):o;e.respondWith(fetch(s).then((e=>{if(0===e.status)return e;const o=new Headers(e.headers);return o.set("Cross-Origin-Embedder-Policy",coepCredentialless?"credentialless":"require-corp"),coepCredentialless||o.set("Cross-Origin-Resource-Policy","cross-origin"),o.set("Cross-Origin-Opener-Policy","same-origin"),new Response(e.body,{status:e.status,statusText:e.statusText,headers:o})})).catch((e=>console.error(e))))}))):(()=>{const e=window.sessionStorage.getItem("coiReloadedBySelf");window.sessionStorage.removeItem("coiReloadedBySelf");const o="coepdegrade"==e,s={shouldRegister:()=>!e,shouldDeregister:()=>!1,coepCredentialless:()=>!0,coepDegrade:()=>!0,doReload:()=>window.location.reload(),quiet:!1,...window.coi},r=navigator,t=r.serviceWorker&&r.serviceWorker.controller;t&&!window.crossOriginIsolated&&window.sessionStorage.setItem("coiCoepHasFailed","true");const i=window.sessionStorage.getItem("coiCoepHasFailed");if(t){const e=s.coepDegrade()&&!(o||window.crossOriginIsolated);r.serviceWorker.controller.postMessage({type:"coepCredentialless",value:!(e||i&&s.coepDegrade())&&s.coepCredentialless()}),e&&(!s.quiet&&console.log("Reloading page to degrade COEP."),window.sessionStorage.setItem("coiReloadedBySelf","coepdegrade"),s.doReload("coepdegrade")),s.shouldDeregister()&&r.serviceWorker.controller.postMessage({type:"deregister"})}!1===window.crossOriginIsolated&&s.shouldRegister()&&(window.isSecureContext?r.serviceWorker?r.serviceWorker.register(window.document.currentScript.src).then((e=>{!s.quiet&&console.log("COOP/COEP Service Worker registered",e.scope),e.addEventListener("updatefound",(()=>{!s.quiet&&console.log("Reloading page to make use of updated COOP/COEP Service Worker."),window.sessionStorage.setItem("coiReloadedBySelf","updatefound"),s.doReload()})),e.active&&!r.serviceWorker.controller&&(!s.quiet&&console.log("Reloading page to make use of COOP/COEP Service Worker."),window.sessionStorage.setItem("coiReloadedBySelf","notcontrolling"),s.doReload())}),(e=>{!s.quiet&&console.error("COOP/COEP Service Worker failed to register:",e)})):!s.quiet&&console.error("COOP/COEP Service Worker not registered, perhaps due to private mode."):!s.quiet&&console.log("COOP/COEP Service Worker not registered, a secure context is required."))})();
+// coi-serviceworker.js
+//
+// Multi-threaded ffmpeg.wasm needs SharedArrayBuffer, which browsers only
+// expose on "cross-origin isolated" pages — pages served with the
+// Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy response
+// headers. Static hosts like GitHub Pages don't let you set response
+// headers, so this service worker adds them itself by intercepting every
+// same-origin fetch and rewriting the response headers on the way back.
+//
+// Usage: put this file next to index.html and load it before anything else:
+//   <script src="./coi-serviceworker.js"></script>
+// Requires HTTPS (or localhost) — service workers don't run on file:// or
+// plain HTTP, so this has no effect when the page is opened as a local file.
+
+if (typeof window === 'undefined') {
+  // We ARE the service worker.
+  self.addEventListener('install', () => self.skipWaiting());
+  self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+
+  self.addEventListener('fetch', (event) => {
+    const request = event.request;
+    // Don't touch cross-origin or cache-only requests — we can't safely
+    // rewrite headers on responses we don't control.
+    if (request.cache === 'only-if-cached' && request.mode !== 'same-origin') return;
+
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.status === 0) return response; // opaque cross-origin response
+          const headers = new Headers(response.headers);
+          headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+          headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        })
+        .catch(() => new Response(null, { status: 599, statusText: 'coi-serviceworker fetch failed' }))
+    );
+  });
+} else {
+  // We're running in the page: register ourselves, then reload once we're
+  // actually controlling the page so the isolation headers apply.
+  (async () => {
+    if (window.crossOriginIsolated) return; // already isolated, nothing to do
+    if (!window.isSecureContext) {
+      console.warn('coi-serviceworker: needs HTTPS or localhost — skipping (protocol: ' + location.protocol + ')');
+      return;
+    }
+    if (!('serviceWorker' in navigator)) {
+      console.warn('coi-serviceworker: service workers unsupported in this browser');
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.register(document.currentScript.src);
+      registration.addEventListener('updatefound', () => window.location.reload());
+      if (registration.active && !navigator.serviceWorker.controller) {
+        window.location.reload();
+      }
+    } catch (err) {
+      console.warn('coi-serviceworker: registration failed', err);
+    }
+  })();
+}
