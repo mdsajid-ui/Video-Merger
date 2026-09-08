@@ -660,41 +660,10 @@ async function loadFFmpeg(){
       'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js', 'text/javascript'
     );
 
-    const wantsMulti = detectEngineMode() === 'multi';
-    if(wantsMulti){
-      const multiEngine = makeEngine();
-      let dots = 0;
-      const spinner = setInterval(() => {
-        dots = (dots + 1) % 4;
-        statusText.textContent = 'Loading multi-core engine' + '.'.repeat(dots) + ' (first load can take a while — downloading ~30MB)';
-      }, 500);
-      try {
-        const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-        const loadPromise = multiEngine.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-          workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
-          classWorkerURL,
-        });
-        // The service-worker trick that fakes COOP/COEP on GitHub Pages is
-        // known to sometimes hang mid-load for the multi-thread core rather
-        // than error out. Don't wait forever — fall back automatically.
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('multi-core engine load timed out')), 15000)
-        );
-        await Promise.race([loadPromise, timeout]);
-        clearInterval(spinner);
-        engineMode = 'multi';
-        updateEngineBadge('multi', 'Multi-core engine active');
-        ffmpeg = multiEngine;
-        return ffmpeg;
-      } catch (e) {
-        clearInterval(spinner);
-        console.warn('Multi-core engine failed to load, falling back to single-core:', e);
-        try { multiEngine.terminate(); } catch(_) {}
-        updateEngineBadge('single', 'Multi-core unavailable — using single-core');
-      }
-    }
+    // Multi-core loading was removed: on GitHub Pages' service-worker-based
+    // cross-origin isolation, the multi-threaded engine proved unreliable —
+    // it could hang indefinitely instead of failing cleanly. The single-core
+    // engine below is slower per-frame but consistently finishes.
 
     // Fresh instance for the single-core attempt — a FFmpeg() object whose
     // .load() already failed once cannot be reliably reloaded in place.
