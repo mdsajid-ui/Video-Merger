@@ -649,6 +649,14 @@ async function loadFFmpeg(){
       if(message.length < 90) statusText.textContent = message;
     });
 
+    // @ffmpeg/ffmpeg itself spins up its own worker (separate from the
+    // core/wasm files below) directly from its package URL. Left as-is,
+    // that's a cross-origin Worker script and browsers block it outright.
+    // Converting it to a blob URL first avoids that.
+    const classWorkerURL = await toBlobURL(
+      'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js', 'text/javascript'
+    );
+
     const wantsMulti = detectEngineMode() === 'multi';
     if(wantsMulti){
       try {
@@ -658,6 +666,7 @@ async function loadFFmpeg(){
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
           workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+          classWorkerURL,
         });
         engineMode = 'multi';
         updateEngineBadge('multi', 'Multi-core engine active');
@@ -672,6 +681,7 @@ async function loadFFmpeg(){
     await ffmpeg.load({
       coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
       wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      classWorkerURL,
     });
     engineMode = 'single';
     updateEngineBadge('single', 'Single-core engine active');
