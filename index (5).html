@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reel — merge your clips</title>
+<script src="./coi-serviceworker.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0B0D12;
+    --panel: #14171D;
+    --panel-2: #1B1F27;
+    --line: #262B35;
+    --text: #F1F3F7;
+    --muted: #8891A0;
+    --accent-1: #FF8A3D;
+    --accent-2: #FFC759;
+    --accent-ink: #1D1204;
+    --teal: #45E0B0;
+    --danger: #FF5D5D;
+    --radius: 16px;
+  }
+  *{ box-sizing: border-box; }
+  body{
+    margin:0;
+    background:
+      radial-gradient(900px 420px at 50% -8%, rgba(255,138,61,0.08), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    display:flex;
+    justify-content:center;
+    padding: 48px 20px 80px;
+  }
+  .wrap{ width:100%; max-width: 640px; }
+
+  /* header */
+  .brand{ display:flex; align-items:center; gap:10px; margin-bottom: 6px; }
+  .brand svg{ display:block; }
+  h1{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size: 28px;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .sub{
+    color: var(--muted);
+    font-size: 14.5px;
+    line-height:1.55;
+    margin: 10px 0 6px;
+    max-width: 50ch;
+  }
+  .engine-note{
+    display:inline-flex;
+    align-items:center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 12px 5px 10px;
+    margin: 8px 0 30px;
+  }
+  .engine-dot{ width:7px; height:7px; border-radius:50%; background: var(--muted); flex-shrink:0; }
+  .engine-dot.multi{ background: var(--teal); box-shadow: 0 0 6px rgba(69,224,176,0.7); }
+  .engine-dot.single{ background: var(--accent-2); }
+
+  /* panel with film-strip edges */
+  .panel{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 4px;
+  }
+  .sprockets{
+    height: 14px;
+    background-image: repeating-radial-gradient(circle at 16px 7px, var(--bg) 0 3px, transparent 3.5px 32px);
+    background-position: 0 0;
+  }
+  .panel-inner{ padding: 26px 24px 24px; }
+
+  .dropzone{
+    position:relative;
+    border: 1.5px dashed var(--line);
+    border-radius: 12px;
+    padding: 30px 22px;
+    text-align:center;
+    cursor:pointer;
+    transition: border-color .15s ease, background .15s ease;
+    background: var(--panel-2);
+  }
+  .dropzone.drag{ border-color: var(--accent-1); background: rgba(255,138,61,0.06); }
+  .dropzone input{ display:none; }
+  .dropzone .dz-title{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 15.5px;
+    margin-bottom: 4px;
+  }
+  .dropzone .dz-sub{ color: var(--muted); font-size: 12.5px; }
+
+  .reel{ margin-top: 24px; }
+  .reel-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .clip-list{
+    list-style:none;
+    margin:0; padding:0;
+    display:flex;
+    flex-direction:column;
+    gap: 6px;
+  }
+  .clip{
+    display:flex;
+    align-items:center;
+    gap: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .clip.dragging{ opacity:.4; }
+  .clip .handle{
+    cursor: grab;
+    color: var(--muted);
+    font-size: 16px;
+    user-select:none;
+    padding: 0 2px;
+  }
+  .clip .idx{
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-1);
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    width: 20px;
+  }
+  .clip .name{
+    flex:1;
+    font-size: 13.5px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow: ellipsis;
+  }
+  .clip .dur{
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 12.5px;
+    min-width: 46px;
+    text-align:right;
+  }
+  .icon-btn{
+    background:none;
+    border:none;
+    color: var(--muted);
+    cursor:pointer;
+    font-size: 15px;
+    padding: 4px 6px;
+    line-height:1;
+    border-radius: 6px;
+  }
+  .icon-btn:hover{ color: var(--text); background: var(--line); }
+  .icon-btn.remove:hover{ color: var(--danger); }
+
+  /* quality control */
+  .quality{ margin-top: 22px; }
+  .quality-label{
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    display:flex;
+    justify-content:space-between;
+  }
+  .quality-control{
+    display:flex;
+    gap:4px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 4px;
+  }
+  .quality-control button{
+    flex:1;
+    background:none;
+    border:none;
+    color: var(--muted);
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 12.5px;
+    padding: 9px 8px;
+    border-radius: 7px;
+    cursor:pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+  .quality-control button.active{
+    background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+    color: var(--accent-ink);
+  }
+  .quality-control button:not(.active):hover{ color: var(--text); }
+  .quality-hint{ font-size: 12px; color: var(--muted); margin-top: 7px; }
+
+  .action-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-top: 22px;
+  }
+  .total{
+    color: var(--muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  button.primary{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 14px;
+    color: var(--accent-ink);
+    background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+    border: none;
+    border-radius: 999px;
+    padding: 13px 24px;
+    cursor:pointer;
+    box-shadow: 0 6px 18px -6px rgba(255,138,61,0.55);
+    transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+  }
+  button.primary:hover{ transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(255,138,61,0.7); }
+  button.primary:active{ transform: translateY(0) scale(0.98); }
+  button.primary:disabled{
+    background: var(--panel-2);
+    color: var(--muted);
+    cursor:not-allowed;
+    box-shadow:none;
+  }
+
+  .status{ margin-top: 24px; display:none; }
+  .status.show{ display:block; }
+  .status-label{
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    display:flex;
+    justify-content:space-between;
+  }
+  .bar{
+    height: 6px;
+    background: var(--panel-2);
+    border-radius: 4px;
+    overflow:hidden;
+  }
+  .bar-fill{
+    height:100%;
+    width:0%;
+    background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+    transition: width .2s ease;
+  }
+
+  .result{ margin-top: 26px; display:none; }
+  .result.show{ display:block; }
+  .result video{
+    width:100%;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    display:block;
+    background:#000;
+  }
+  .result-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-top: 12px;
+    gap: 12px;
+  }
+  a.download{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 13.5px;
+    color: var(--accent-2);
+    text-decoration:none;
+    border: 1px solid rgba(255,199,89,0.35);
+    border-radius: 999px;
+    padding: 10px 18px;
+    white-space:nowrap;
+  }
+  a.download:hover{ background: rgba(255,138,61,0.08); }
+
+  .error{
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: rgba(255,93,93,0.08);
+    border: 1px solid rgba(255,93,93,0.3);
+    color: #FFB3B3;
+    font-size: 13px;
+    line-height:1.5;
+    display:none;
+  }
+  .error.show{ display:block; }
+
+  .empty{
+    color: var(--muted);
+    font-size: 12.5px;
+    padding: 14px 0;
+    text-align:center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+  }
+
+  footer{
+    margin-top: 30px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height:1.6;
+    padding: 0 4px;
+  }
+
+  .warning{
+    margin-top: 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(255,199,89,0.08);
+    border: 1px solid rgba(255,199,89,0.3);
+    color: #F0D9A6;
+    font-size: 12.5px;
+    line-height:1.5;
+    display:none;
+  }
+  .warning.show{ display:block; }
+
+  details.error-detail{ margin-top: 8px; }
+  details.error-detail summary{ cursor:pointer; color: #FFB3B3; font-size: 12px; }
+  details.error-detail pre{
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    color: #d99b8b;
+    margin-top: 6px;
+    max-height: 160px;
+    overflow:auto;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+      <circle cx="13" cy="13" r="11.5" stroke="#FF8A3D" stroke-width="1.6"/>
+      <circle cx="13" cy="13" r="3.2" fill="#FF8A3D"/>
+      <circle cx="13" cy="4.8" r="1.5" fill="#8891A0"/>
+      <circle cx="20.4" cy="9.8" r="1.5" fill="#8891A0"/>
+      <circle cx="17.6" cy="19.6" r="1.5" fill="#8891A0"/>
+      <circle cx="8.4" cy="19.6" r="1.5" fill="#8891A0"/>
+      <circle cx="5.6" cy="9.8" r="1.5" fill="#8891A0"/>
+    </svg>
+    <h1>Reel</h1>
+  </div>
+  <p class="sub">Add clips, put them in order, and merge them into one video — right in your browser. Nothing uploads anywhere.</p>
+  <div class="engine-note" id="engineNote"><span class="engine-dot" id="engineDot"></span><span id="engineText">Checking engine…</span></div>
+
+  <div class="panel">
+    <div class="sprockets"></div>
+    <div class="panel-inner">
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="video/*" multiple>
+        <div class="dz-title">Drop video files here, or click to browse</div>
+        <div class="dz-sub">MP4, MOV, WebM, MKV — any number of clips</div>
+      </label>
+
+      <div class="reel">
+        <div class="reel-head">
+          <span id="clipCount">No clips yet</span>
+          <span id="totalDur"></span>
+        </div>
+        <ul class="clip-list" id="clipList"></ul>
+        <div class="empty" id="emptyMsg">Your clips will line up here in merge order</div>
+        <div class="warning" id="lengthWarning"></div>
+      </div>
+
+      <div class="quality">
+        <div class="quality-label"><span>Output quality</span><span id="qualityDims">1280×720</span></div>
+        <div class="quality-control" id="qualityControl">
+          <button data-q="fast">Fast</button>
+          <button data-q="balanced" class="active">Balanced</button>
+          <button data-q="high">High</button>
+        </div>
+        <div class="quality-hint" id="qualityHint">Only applies when clips need re-encoding — matching clips merge instantly at full quality regardless.</div>
+      </div>
+
+      <div class="action-row">
+        <span class="total" id="hint">Drag the ⠿ handle to reorder clips</span>
+        <button class="primary" id="mergeBtn" disabled>Merge clips</button>
+      </div>
+
+      <div class="status" id="status">
+        <div class="status-label"><span id="statusText">Loading engine…</span><span id="statusPct">0%</span></div>
+        <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+      </div>
+
+      <div class="error" id="errorBox"></div>
+
+      <div class="result" id="result">
+        <video id="resultVideo" controls></video>
+        <div class="result-row">
+          <span class="total" id="resultInfo"></span>
+          <a class="download" id="downloadLink" download="merged.mp4">Download merged.mp4</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    Clips that already share the same resolution are stitched with an instant, lossless copy. Mismatched formats or resolutions get resized to a common frame and re-encoded, which takes longer since it runs on your device. When this page is served with cross-origin isolation headers (COOP/COEP), the engine automatically switches to a multi-core encoder for a large speed boost.
+  </footer>
+</div>
+
+<script type="module">
+import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const clipList = document.getElementById('clipList');
+const clipCount = document.getElementById('clipCount');
+const totalDurEl = document.getElementById('totalDur');
+const emptyMsg = document.getElementById('emptyMsg');
+const mergeBtn = document.getElementById('mergeBtn');
+const statusBox = document.getElementById('status');
+const statusText = document.getElementById('statusText');
+const statusPct = document.getElementById('statusPct');
+const barFill = document.getElementById('barFill');
+const errorBox = document.getElementById('errorBox');
+const resultBox = document.getElementById('result');
+const resultVideo = document.getElementById('resultVideo');
+const resultInfo = document.getElementById('resultInfo');
+const downloadLink = document.getElementById('downloadLink');
+const lengthWarning = document.getElementById('lengthWarning');
+const engineDot = document.getElementById('engineDot');
+const engineText = document.getElementById('engineText');
+const qualityControl = document.getElementById('qualityControl');
+const qualityDims = document.getElementById('qualityDims');
+const qualityHint = document.getElementById('qualityHint');
+
+let clips = []; // { id, file, url, duration }
+let dragSrcId = null;
+let ffmpeg = null;
+let ffmpegLoading = null;
+let logBuffer = [];
+let engineMode = null; // 'multi' | 'single'
+
+const QUALITY = {
+  fast:     { W: 854,  H: 480,  crf: 26, dims: '854×480',   note: 'Smallest, quickest re-encode. Good for previews or long merges.' },
+  balanced: { W: 1280, H: 720,  crf: 23, dims: '1280×720',  note: 'Good balance of speed and quality for most clips.' },
+  high:     { W: 1920, H: 1080, crf: 20, dims: '1920×1080', note: 'Best quality, slowest re-encode — most noticeable on the single-core engine.' },
+};
+let selectedQuality = 'balanced';
+
+qualityControl.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-q]');
+  if(!btn) return;
+  selectedQuality = btn.dataset.q;
+  [...qualityControl.children].forEach(b => b.classList.toggle('active', b === btn));
+  const q = QUALITY[selectedQuality];
+  qualityDims.textContent = q.dims;
+  qualityHint.textContent = q.note + ' Only applies when clips need re-encoding.';
+});
+
+function detectEngineMode(){
+  return (self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined') ? 'multi' : 'single';
+}
+function updateEngineBadge(mode, label){
+  engineDot.className = 'engine-dot' + (mode === 'multi' ? ' multi' : mode === 'single' ? ' single' : '');
+  engineText.textContent = label;
+}
+(function initEngineNote(){
+  const mode = detectEngineMode();
+  if(mode === 'multi'){
+    updateEngineBadge('multi', 'Multi-core engine available — merges will use several CPU threads');
+  } else {
+    updateEngineBadge('single', 'Single-core engine (this page isn\u2019t cross-origin isolated) — try the Fast preset for long merges');
+  }
+})();
+
+function fmtTime(s){
+  if(!isFinite(s)) return '--:--';
+  const m = Math.floor(s/60);
+  const sec = Math.round(s%60);
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function uid(){ return Math.random().toString(36).slice(2,9); }
+
+function render(){
+  clipList.innerHTML = '';
+  emptyMsg.style.display = clips.length ? 'none' : 'block';
+  clipCount.textContent = clips.length ? `${clips.length} clip${clips.length>1?'s':''}` : 'No clips yet';
+  const total = clips.reduce((a,c)=> a + (c.duration||0), 0);
+  totalDurEl.textContent = clips.length ? `total ${fmtTime(total)}` : '';
+  mergeBtn.disabled = clips.length < 2;
+
+  if(total > 600){
+    lengthWarning.textContent = `${fmtTime(total)} total is a lot for a browser-based engine to encode in one pass — long merges can take a very long time or run out of memory and fail. Try the Fast quality preset, or merge in smaller batches (10–15 minutes at a time).`;
+    lengthWarning.classList.add('show');
+  } else {
+    lengthWarning.classList.remove('show');
+  }
+
+  clips.forEach((c, i) => {
+    const li = document.createElement('li');
+    li.className = 'clip';
+    li.draggable = true;
+    li.dataset.id = c.id;
+    li.innerHTML = `
+      <span class="handle">⠿</span>
+      <span class="idx">${i+1}</span>
+      <span class="name">${c.file.name}</span>
+      <span class="dur">${c.duration ? fmtTime(c.duration) : '…'}</span>
+      <button class="icon-btn remove" title="Remove" data-id="${c.id}">✕</button>
+    `;
+    clipList.appendChild(li);
+  });
+}
+
+function addFiles(fileList){
+  const files = Array.from(fileList).filter(f => f.type.startsWith('video/'));
+  files.forEach(file => {
+    const id = uid();
+    const url = URL.createObjectURL(file);
+    const entry = { id, file, url, duration: null };
+    clips.push(entry);
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.src = url;
+    probe.onloadedmetadata = () => {
+      entry.duration = probe.duration;
+      entry.width = probe.videoWidth;
+      entry.height = probe.videoHeight;
+      render();
+    };
+  });
+  render();
+}
+
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => addFiles(e.target.files));
+
+['dragenter','dragover'].forEach(evt => dropzone.addEventListener(evt, e => {
+  e.preventDefault();
+  dropzone.classList.add('drag');
+}));
+['dragleave','drop'].forEach(evt => dropzone.addEventListener(evt, e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+}));
+dropzone.addEventListener('drop', e => {
+  if(e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+});
+
+clipList.addEventListener('click', e => {
+  const btn = e.target.closest('.remove');
+  if(!btn) return;
+  const id = btn.dataset.id;
+  clips = clips.filter(c => c.id !== id);
+  render();
+});
+
+clipList.addEventListener('dragstart', e => {
+  const li = e.target.closest('.clip');
+  if(!li) return;
+  dragSrcId = li.dataset.id;
+  li.classList.add('dragging');
+});
+clipList.addEventListener('dragend', e => {
+  const li = e.target.closest('.clip');
+  if(li) li.classList.remove('dragging');
+});
+clipList.addEventListener('dragover', e => {
+  e.preventDefault();
+  const after = getDragAfterElement(clipList, e.clientY);
+  const dragging = clipList.querySelector('.dragging');
+  if(!dragging) return;
+  if(after == null){
+    clipList.appendChild(dragging);
+  } else {
+    clipList.insertBefore(dragging, after);
+  }
+});
+clipList.addEventListener('drop', () => {
+  const newOrder = Array.from(clipList.children).map(li => li.dataset.id);
+  clips.sort((a,b) => newOrder.indexOf(a.id) - newOrder.indexOf(b.id));
+  render();
+});
+
+function getDragAfterElement(container, y){
+  const els = [...container.querySelectorAll('.clip:not(.dragging)')];
+  return els.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if(offset < 0 && offset > closest.offset){
+      return { offset, element: child };
+    } else {
+      return closest;
+    }
+  }, { offset: -Infinity }).element;
+}
+
+function showError(msg, detail){
+  errorBox.innerHTML = '';
+  const p = document.createElement('div');
+  p.textContent = msg;
+  errorBox.appendChild(p);
+  if(detail){
+    const d = document.createElement('details');
+    d.className = 'error-detail';
+    d.innerHTML = `<summary>Show engine output</summary><pre></pre>`;
+    d.querySelector('pre').textContent = detail;
+    errorBox.appendChild(d);
+  }
+  errorBox.classList.add('show');
+}
+function clearError(){
+  errorBox.classList.remove('show');
+  errorBox.innerHTML = '';
+}
+
+async function loadFFmpeg(){
+  if(ffmpeg) return ffmpeg;
+  if(ffmpegLoading) return ffmpegLoading;
+  ffmpegLoading = (async () => {
+    ffmpeg = new FFmpeg();
+    ffmpeg.on('progress', ({ progress }) => {
+      const pct = Math.min(100, Math.max(0, Math.round(progress * 100)));
+      barFill.style.width = pct + '%';
+      statusPct.textContent = pct + '%';
+    });
+    ffmpeg.on('log', ({ message }) => {
+      if(!message) return;
+      logBuffer.push(message);
+      if(logBuffer.length > 400) logBuffer.shift();
+      if(message.length < 90) statusText.textContent = message;
+    });
+
+    const wantsMulti = detectEngineMode() === 'multi';
+    if(wantsMulti){
+      try {
+        statusText.textContent = 'Loading multi-core engine…';
+        const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+          workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+        });
+        engineMode = 'multi';
+        updateEngineBadge('multi', 'Multi-core engine active');
+        return ffmpeg;
+      } catch (e) {
+        console.warn('Multi-core engine failed to load, falling back to single-core:', e);
+      }
+    }
+
+    statusText.textContent = 'Loading engine…';
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+    await ffmpeg.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+    engineMode = 'single';
+    updateEngineBadge('single', 'Single-core engine active');
+    return ffmpeg;
+  })();
+  return ffmpegLoading;
+}
+
+mergeBtn.addEventListener('click', async () => {
+  clearError();
+  resultBox.classList.remove('show');
+  mergeBtn.disabled = true;
+  statusBox.classList.add('show');
+  barFill.style.width = '0%';
+  statusPct.textContent = '0%';
+  statusText.textContent = 'Loading engine…';
+
+  const q = QUALITY[selectedQuality];
+  const W = q.W, H = q.H, CRF = q.crf;
+  const threads = Math.min(navigator.hardwareConcurrency || 4, 8);
+
+  function probeDuration(url){
+    return new Promise(resolve => {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.src = url;
+      v.onloadedmetadata = () => resolve(v.duration);
+      v.onerror = () => resolve(NaN);
+    });
+  }
+
+  function allSameResolution(){
+    if(!clips.every(c => c.width && c.height)) return false;
+    const w = clips[0].width, h = clips[0].height;
+    return clips.every(c => c.width === w && c.height === h);
+  }
+
+  async function attemptFastConcat(engine){
+    const listText = clips.map(c => `file '${c.inName}'`).join('\n');
+    await engine.writeFile('list.txt', new TextEncoder().encode(listText));
+    await engine.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', 'output.mp4']);
+    const data = await engine.readFile('output.mp4');
+    if(!data || !data.length) throw new Error('empty output');
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const outDuration = await probeDuration(url);
+    const expected = clips.reduce((a,c) => a + (c.duration || 0), 0);
+    if(!isFinite(outDuration) || Math.abs(outDuration - expected) > Math.max(2, expected * 0.05)){
+      URL.revokeObjectURL(url);
+      throw new Error('duration mismatch after stream copy');
+    }
+    return { blob, url };
+  }
+
+  function buildArgs(withAudio, preset){
+    const args = [];
+    clips.forEach(c => { args.push('-i', c.inName); });
+    let filter = '';
+    clips.forEach((c, i) => {
+      filter += `[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}];`;
+    });
+    if(withAudio){
+      const concatInputs = clips.map((c,i) => `[v${i}][${i}:a]`).join('');
+      filter += `${concatInputs}concat=n=${clips.length}:v=1:a=1[v][a]`;
+      args.push('-filter_complex', filter, '-map', '[v]', '-map', '[a]');
+    } else {
+      const concatInputs = clips.map((c,i) => `[v${i}]`).join('');
+      filter += `${concatInputs}concat=n=${clips.length}:v=1:a=0[v]`;
+      args.push('-filter_complex', filter, '-map', '[v]');
+    }
+    args.push('-threads', String(threads));
+    args.push('-c:v', 'libx264', '-preset', preset, '-crf', String(CRF));
+    if(withAudio){ args.push('-c:a', 'aac', '-b:a', '192k'); }
+    args.push('-movflags', '+faststart', 'output.mp4');
+    return args;
+  }
+
+  try {
+    const engine = await loadFFmpeg();
+
+    statusText.textContent = 'Reading clips…';
+    for(let i=0; i<clips.length; i++){
+      const c = clips[i];
+      const ext = (c.file.name.split('.').pop() || 'mp4').toLowerCase();
+      c.inName = `in${i}.${ext}`;
+      await engine.writeFile(c.inName, await fetchFile(c.file));
+    }
+
+    let usedAudio = true;
+    let usedFastPath = false;
+    let blob, url;
+    logBuffer = [];
+
+    if(allSameResolution()){
+      statusText.textContent = 'Trying quick merge (no re-encoding)…';
+      try {
+        const fast = await attemptFastConcat(engine);
+        blob = fast.blob; url = fast.url;
+        usedFastPath = true;
+      } catch (fastErr) {
+        console.warn('Fast concat not possible, falling back to re-encode:', fastErr, logBuffer.join('\n'));
+        logBuffer = [];
+      }
+    }
+
+    if(!usedFastPath){
+      statusText.textContent = `Re-encoding at ${q.dims} (${engineMode === 'multi' ? 'multi-core' : 'single-core'})…`;
+      barFill.style.width = '0%';
+      statusPct.textContent = '0%';
+      try {
+        await engine.exec(buildArgs(true, 'ultrafast'));
+      } catch (firstErr) {
+        console.warn('Merge with audio failed, retrying without audio:', firstErr, logBuffer.join('\n'));
+        usedAudio = false;
+        logBuffer = [];
+        barFill.style.width = '0%';
+        statusPct.textContent = '0%';
+        statusText.textContent = 'Retrying without audio…';
+        await engine.exec(buildArgs(false, 'ultrafast'));
+      }
+      statusText.textContent = 'Finishing up…';
+      const data = await engine.readFile('output.mp4');
+      blob = new Blob([data.buffer], { type: 'video/mp4' });
+      url = URL.createObjectURL(blob);
+    }
+
+    resultVideo.src = url;
+    downloadLink.href = url;
+    const notes = [];
+    if(usedFastPath) notes.push('instant copy, no quality loss');
+    if(!usedFastPath) notes.push(`${q.dims} · ${engineMode === 'multi' ? 'multi-core' : 'single-core'} engine`);
+    if(!usedAudio) notes.push('no audio track found, output is silent');
+    resultInfo.textContent = `${clips.length} clips merged${notes.length ? ' · ' + notes.join(' · ') : ''} · ${(blob.size/1024/1024).toFixed(1)} MB`;
+    resultBox.classList.add('show');
+    statusBox.classList.remove('show');
+  } catch (err) {
+    console.error(err);
+    statusBox.classList.remove('show');
+    showError(
+      "Couldn't merge those clips — the engine reported an error below. This can happen with an unsupported codec, a corrupted file, or the browser running out of memory on long/high-resolution footage.",
+      (logBuffer.join('\n') || String(err && err.message || err)).slice(-4000)
+    );
+  } finally {
+    mergeBtn.disabled = clips.length < 2;
+  }
+});
+
+render();
+</script>
+</body>
+</html>
