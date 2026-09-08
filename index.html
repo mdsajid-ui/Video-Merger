@@ -424,8 +424,32 @@
 </div>
 
 <script type="module">
-import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
-import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+import { fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js';
+
+async function downloadWithProgress(url, mimeType, onProgress) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText} fetching ${url}`);
+  const total = parseInt(resp.headers.get('content-length') || '0', 10);
+  if (!total || !resp.body) {
+    const blob = await resp.blob();
+    return URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: mimeType }));
+  }
+  const reader = resp.body.getReader();
+  let received = 0;
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (onProgress) {
+      onProgress(received, total);
+    }
+  }
+  const blob = new Blob(chunks, { type: mimeType });
+  return URL.createObjectURL(blob);
+}
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -550,6 +574,9 @@ function addFiles(fileList){
     };
   });
   render();
+  if (clips.length >= 1) {
+    loadFFmpeg().catch(() => {});
+  }
 }
 
 dropzone.addEventListener('click', () => fileInput.click());
@@ -654,67 +681,79 @@ async function loadFFmpeg(){
   if(ffmpeg) return ffmpeg;
   if(ffmpegLoading) return ffmpegLoading;
   ffmpegLoading = (async () => {
-    // @ffmpeg/ffmpeg itself spins up its own worker (separate from the
-    // core/wasm files below) directly from its package URL. Left as-is,
-    // that's a cross-origin Worker script and browsers block it outright.
-    // Converting it to a blob URL first avoids that.
-    const classWorkerURL = await toBlobURL(
-      'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js', 'text/javascript'
+    const classWorkerURL = await downloadWithProgress(
+      'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js',
+      'text/javascript'
     );
 
     const wantsMulti = detectEngineMode() === 'multi';
     if(wantsMulti){
       const multiEngine = makeEngine();
-      let dots = 0;
-      const spinner = setInterval(() => {
-        dots = (dots + 1) % 4;
-        statusText.textContent = 'Loading multi-core engine' + '.'.repeat(dots) + ' (first load can take a while — downloading ~30MB)';
-      }, 500);
       try {
-        const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
+        const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm';
+        statusText.textContent = 'Loading multi-core engine…';
+        const wasmURL = await downloadWithProgress(
+          `${baseURL}/ffmpeg-core.wasm`,
+          'application/wasm',
+          (loaded, total) => {
+            const pct = Math.round((loaded / total) * 100);
+            const mb = (loaded / 1048576).toFixed(1);
+            const totalMb = (total / 1048576).toFixed(1);
+            barFill.style.width = pct + '%';
+            statusPct.textContent = pct + '%';
+            statusText.textContent = `Downloading multi-core engine: ${mb}MB / ${totalMb}MB (${pct}%)`;
+          }
+        );
+        const coreURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+        const workerURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+        statusText.textContent = 'Initializing multi-core WebAssembly…';
         const loadPromise = multiEngine.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-          workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+          coreURL,
+          wasmURL,
+          workerURL,
           classWorkerURL,
         });
-        // The service-worker trick that fakes COOP/COEP on GitHub Pages is
-        // known to sometimes hang mid-load for the multi-thread core rather
-        // than error out. Don't wait forever — fall back automatically.
         const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('multi-core engine load timed out')), 15000)
+          setTimeout(() => reject(new Error('multi-core engine load timed out')), 25000)
         );
         await Promise.race([loadPromise, timeout]);
-        clearInterval(spinner);
         engineMode = 'multi';
         updateEngineBadge('multi', 'Multi-core engine active');
         ffmpeg = multiEngine;
         return ffmpeg;
       } catch (e) {
-        clearInterval(spinner);
         console.warn('Multi-core engine failed to load, falling back to single-core:', e);
         try { multiEngine.terminate(); } catch(_) {}
         updateEngineBadge('single', 'Multi-core unavailable — using single-core');
       }
     }
 
-    // Fresh instance for the single-core attempt — a FFmpeg() object whose
-    // .load() already failed once cannot be reliably reloaded in place.
     const singleEngine = makeEngine();
-    let sdots = 0;
-    const sspinner = setInterval(() => {
-      sdots = (sdots + 1) % 4;
-      statusText.textContent = 'Loading engine' + '.'.repeat(sdots);
-    }, 500);
     try {
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+      const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+      statusText.textContent = 'Loading engine…';
+      const wasmURL = await downloadWithProgress(
+        `${baseURL}/ffmpeg-core.wasm`,
+        'application/wasm',
+        (loaded, total) => {
+          const pct = Math.round((loaded / total) * 100);
+          const mb = (loaded / 1048576).toFixed(1);
+          const totalMb = (total / 1048576).toFixed(1);
+          barFill.style.width = pct + '%';
+          statusPct.textContent = pct + '%';
+          statusText.textContent = `Downloading engine: ${mb}MB / ${totalMb}MB (${pct}%)`;
+        }
+      );
+      const coreURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      statusText.textContent = 'Initializing WebAssembly…';
       await singleEngine.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL,
+        wasmURL,
         classWorkerURL,
       });
-    } finally {
-      clearInterval(sspinner);
+    } catch (err) {
+      statusText.textContent = 'Failed to load engine.';
+      throw err;
     }
     engineMode = 'single';
     updateEngineBadge('single', 'Single-core engine active');
@@ -724,8 +763,6 @@ async function loadFFmpeg(){
   try {
     return await ffmpegLoading;
   } catch (e) {
-    // Reset so the next attempt starts clean instead of returning a
-    // half-loaded engine or a promise that already rejected.
     ffmpeg = null;
     ffmpegLoading = null;
     throw e;
@@ -739,21 +776,11 @@ mergeBtn.addEventListener('click', async () => {
   statusBox.classList.add('show');
   barFill.style.width = '0%';
   statusPct.textContent = '0%';
-  statusText.textContent = 'Loading engine…';
+  statusText.textContent = 'Preparing engine…';
 
   const q = QUALITY[selectedQuality];
   const W = q.W, H = q.H, CRF = q.crf;
   const threads = Math.min(navigator.hardwareConcurrency || 4, 16);
-
-  function probeDuration(url){
-    return new Promise(resolve => {
-      const v = document.createElement('video');
-      v.preload = 'metadata';
-      v.src = url;
-      v.onloadedmetadata = () => resolve(v.duration);
-      v.onerror = () => resolve(NaN);
-    });
-  }
 
   function allSameResolution(){
     if(!clips.every(c => c.width && c.height)) return false;
@@ -764,17 +791,14 @@ mergeBtn.addEventListener('click', async () => {
   async function attemptFastConcat(engine){
     const listText = clips.map(c => `file '${c.inName}'`).join('\n');
     await engine.writeFile('list.txt', new TextEncoder().encode(listText));
+    statusText.textContent = 'Performing instant lossless merge (no re-encoding)…';
+    barFill.style.width = '60%';
+    statusPct.textContent = '60%';
     await engine.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', 'output.mp4']);
     const data = await engine.readFile('output.mp4');
-    if(!data || !data.length) throw new Error('empty output');
+    if(!data || !data.length) throw new Error('empty output from fast concat');
     const blob = new Blob([data.buffer], { type: 'video/mp4' });
     const url = URL.createObjectURL(blob);
-    const outDuration = await probeDuration(url);
-    const expected = clips.reduce((a,c) => a + (c.duration || 0), 0);
-    if(!isFinite(outDuration) || Math.abs(outDuration - expected) > Math.max(2, expected * 0.05)){
-      URL.revokeObjectURL(url);
-      throw new Error('duration mismatch after stream copy');
-    }
     return { blob, url };
   }
 
@@ -805,11 +829,17 @@ mergeBtn.addEventListener('click', async () => {
     const engine = await loadFFmpeg();
 
     statusText.textContent = 'Reading clips…';
-    await Promise.all(clips.map(async (c, i) => {
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i];
       const ext = (c.file.name.split('.').pop() || 'mp4').toLowerCase();
       c.inName = `in${i}.${ext}`;
+      const sizeMB = (c.file.size / 1048576).toFixed(1);
+      statusText.textContent = `Reading clip ${i + 1} of ${clips.length}: ${c.file.name} (${sizeMB} MB)…`;
+      const readPct = Math.round(((i + 0.5) / clips.length) * 100);
+      barFill.style.width = readPct + '%';
+      statusPct.textContent = readPct + '%';
       await engine.writeFile(c.inName, await fetchFile(c.file));
-    }));
+    }
 
     let usedAudio = true;
     let usedFastPath = false;

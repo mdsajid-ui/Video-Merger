@@ -1,65 +1,118 @@
-// coi-serviceworker.js
-//
-// Multi-threaded ffmpeg.wasm needs SharedArrayBuffer, which browsers only
-// expose on "cross-origin isolated" pages — pages served with the
-// Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy response
-// headers. Static hosts like GitHub Pages don't let you set response
-// headers, so this service worker adds them itself by intercepting every
-// same-origin fetch and rewriting the response headers on the way back.
-//
-// Usage: put this file next to index.html and load it before anything else:
-//   <script src="./coi-serviceworker.js"></script>
-// Requires HTTPS (or localhost) — service workers don't run on file:// or
-// plain HTTP, so this has no effect when the page is opened as a local file.
-
+/*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */
+let coepCredentialless = false;
 if (typeof window === 'undefined') {
-  // We ARE the service worker.
-  self.addEventListener('install', () => self.skipWaiting());
-  self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+    self.addEventListener("install", () => self.skipWaiting());
+    self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-  self.addEventListener('fetch', (event) => {
-    const request = event.request;
-    // Don't touch cross-origin or cache-only requests — we can't safely
-    // rewrite headers on responses we don't control.
-    if (request.cache === 'only-if-cached' && request.mode !== 'same-origin') return;
+    self.addEventListener("message", (ev) => {
+        if (!ev.data) {
+            return;
+        } else if (ev.data.type === "deregister") {
+            self.registration
+                .unregister()
+                .then(() => {
+                    return self.clients.matchAll();
+                })
+                .then(clients => {
+                    clients.forEach((client) => client.navigate(client.url));
+                });
+        } else if (ev.data.type === "coepCredentialless") {
+            coepCredentialless = ev.data.value;
+        }
+    });
 
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.status === 0) return response; // opaque cross-origin response
-          const headers = new Headers(response.headers);
-          headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
-          headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers,
-          });
-        })
-        .catch(() => new Response(null, { status: 599, statusText: 'coi-serviceworker fetch failed' }))
-    );
-  });
+    self.addEventListener("fetch", function (event) {
+        const r = event.request;
+        if (r.cache === "only-if-cached" && r.mode !== "same-origin") {
+            return;
+        }
+
+        const request = (coepCredentialless && r.mode === "no-cors")
+            ? new Request(r, {
+                credentials: "omit",
+            })
+            : r;
+        event.respondWith(
+            fetch(request)
+                .then((response) => {
+                    if (response.status === 0) {
+                        return response;
+                    }
+
+                    const newHeaders = new Headers(response.headers);
+                    newHeaders.set("Cross-Origin-Embedder-Policy",
+                        coepCredentialless ? "credentialless" : "require-corp"
+                    );
+                    if (!coepCredentialless) {
+                        newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
+                    }
+                    newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+
+                    return new Response(response.body, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: newHeaders,
+                    });
+                })
+                .catch((e) => console.error(e))
+        );
+    });
+
 } else {
-  // We're running in the page: register ourselves, then reload once we're
-  // actually controlling the page so the isolation headers apply.
-  (async () => {
-    if (window.crossOriginIsolated) return; // already isolated, nothing to do
-    if (!window.isSecureContext) {
-      console.warn('coi-serviceworker: needs HTTPS or localhost — skipping (protocol: ' + location.protocol + ')');
-      return;
-    }
-    if (!('serviceWorker' in navigator)) {
-      console.warn('coi-serviceworker: service workers unsupported in this browser');
-      return;
-    }
-    try {
-      const registration = await navigator.serviceWorker.register(document.currentScript.src);
-      registration.addEventListener('updatefound', () => window.location.reload());
-      if (registration.active && !navigator.serviceWorker.controller) {
-        window.location.reload();
-      }
-    } catch (err) {
-      console.warn('coi-serviceworker: registration failed', err);
-    }
-  })();
+    (() => {
+        // You can customize the behavior of this script through a global `coi` variable.
+        const coi = {
+            shouldRegister: () => true,
+            shouldDeregister: () => false,
+            coepCredentialless: () => !(window.chrome || window.netscape),
+            doReload: () => window.location.reload(),
+            quiet: false,
+            ...window.coi
+        };
+
+        const n = navigator;
+
+        if (n.serviceWorker && n.serviceWorker.controller) {
+            n.serviceWorker.controller.postMessage({
+                type: "coepCredentialless",
+                value: coi.coepCredentialless(),
+            });
+
+            if (coi.shouldDeregister()) {
+                n.serviceWorker.controller.postMessage({ type: "deregister" });
+            }
+        }
+
+        // If we're already coi: do nothing. Perhaps it's due to this script doing its job, or COOP/COEP are
+        // already set from the origin server. Also if the browser has no notion of crossOriginIsolated, just give up here.
+        if (window.crossOriginIsolated !== false || !coi.shouldRegister()) return;
+
+        if (!window.isSecureContext) {
+            !coi.quiet && console.log("COOP/COEP Service Worker not registered, a secure context is required.");
+            return;
+        }
+
+        // In some environments (e.g. Chrome incognito mode) this won't be available
+        if (n.serviceWorker) {
+            n.serviceWorker.register(window.document.currentScript.src).then(
+                (registration) => {
+                    !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
+
+                    registration.addEventListener("updatefound", () => {
+                        !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
+                        coi.doReload();
+                    });
+
+                    // If the registration is active, but it's not controlling the page
+                    if (registration.active && !n.serviceWorker.controller) {
+                        !coi.quiet && console.log("Reloading page to make use of COOP/COEP Service Worker.");
+                        coi.doReload();
+                    }
+                },
+                (err) => {
+                    !coi.quiet && console.error("COOP/COEP Service Worker failed to register:", err);
+                }
+            );
+        }
+    })();
 }
