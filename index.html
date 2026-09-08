@@ -419,7 +419,7 @@
   </div>
 
   <footer>
-    Clips that already share the same resolution are stitched with an instant, lossless copy. Mismatched formats or resolutions get resized to a common frame and re-encoded, which takes longer since it runs on your device. When this page is served with cross-origin isolation headers (COOP/COEP), the engine automatically switches to a multi-core encoder for a large speed boost.
+    Clips that already share the same resolution are stitched with an instant, lossless copy. Mismatched formats or resolutions get resized to a common frame and re-encoded, which takes longer since it runs on your device. The multi-core encoder needs this page served over HTTPS with coi-serviceworker.js alongside it (e.g. GitHub Pages) — opened as a local file, it always falls back to single-core.
   </footer>
 </div>
 
@@ -485,6 +485,8 @@ function updateEngineBadge(mode, label){
   const mode = detectEngineMode();
   if(mode === 'multi'){
     updateEngineBadge('multi', 'Multi-core engine available — merges will use several CPU threads');
+  } else if(location.protocol === 'file:'){
+    updateEngineBadge('single', 'Single-core engine — opened as a local file, so multi-core can\u2019t activate here. Host it (e.g. GitHub Pages) with coi-serviceworker.js alongside it for a big speed boost.');
   } else {
     updateEngineBadge('single', 'Single-core engine (this page isn\u2019t cross-origin isolated) — try the Fast preset for long merges');
   }
@@ -660,10 +662,41 @@ async function loadFFmpeg(){
       'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js', 'text/javascript'
     );
 
-    // Multi-core loading was removed: on GitHub Pages' service-worker-based
-    // cross-origin isolation, the multi-threaded engine proved unreliable —
-    // it could hang indefinitely instead of failing cleanly. The single-core
-    // engine below is slower per-frame but consistently finishes.
+    const wantsMulti = detectEngineMode() === 'multi';
+    if(wantsMulti){
+      const multiEngine = makeEngine();
+      let dots = 0;
+      const spinner = setInterval(() => {
+        dots = (dots + 1) % 4;
+        statusText.textContent = 'Loading multi-core engine' + '.'.repeat(dots) + ' (first load can take a while — downloading ~30MB)';
+      }, 500);
+      try {
+        const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
+        const loadPromise = multiEngine.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+          workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+          classWorkerURL,
+        });
+        // The service-worker trick that fakes COOP/COEP on GitHub Pages is
+        // known to sometimes hang mid-load for the multi-thread core rather
+        // than error out. Don't wait forever — fall back automatically.
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('multi-core engine load timed out')), 15000)
+        );
+        await Promise.race([loadPromise, timeout]);
+        clearInterval(spinner);
+        engineMode = 'multi';
+        updateEngineBadge('multi', 'Multi-core engine active');
+        ffmpeg = multiEngine;
+        return ffmpeg;
+      } catch (e) {
+        clearInterval(spinner);
+        console.warn('Multi-core engine failed to load, falling back to single-core:', e);
+        try { multiEngine.terminate(); } catch(_) {}
+        updateEngineBadge('single', 'Multi-core unavailable — using single-core');
+      }
+    }
 
     // Fresh instance for the single-core attempt — a FFmpeg() object whose
     // .load() already failed once cannot be reliably reloaded in place.
@@ -710,7 +743,7 @@ mergeBtn.addEventListener('click', async () => {
 
   const q = QUALITY[selectedQuality];
   const W = q.W, H = q.H, CRF = q.crf;
-  const threads = Math.min(navigator.hardwareConcurrency || 4, 8);
+  const threads = Math.min(navigator.hardwareConcurrency || 4, 16);
 
   function probeDuration(url){
     return new Promise(resolve => {
@@ -761,7 +794,7 @@ mergeBtn.addEventListener('click', async () => {
       filter += `${concatInputs}concat=n=${clips.length}:v=1:a=0[v]`;
       args.push('-filter_complex', filter, '-map', '[v]');
     }
-    args.push('-threads', String(threads));
+    args.push('-threads', String(threads), '-filter_threads', String(threads), '-filter_complex_threads', String(threads));
     args.push('-c:v', 'libx264', '-preset', preset, '-crf', String(CRF));
     if(withAudio){ args.push('-c:a', 'aac', '-b:a', '192k'); }
     args.push('-movflags', '+faststart', 'output.mp4');
@@ -772,12 +805,11 @@ mergeBtn.addEventListener('click', async () => {
     const engine = await loadFFmpeg();
 
     statusText.textContent = 'Reading clips…';
-    for(let i=0; i<clips.length; i++){
-      const c = clips[i];
+    await Promise.all(clips.map(async (c, i) => {
       const ext = (c.file.name.split('.').pop() || 'mp4').toLowerCase();
       c.inName = `in${i}.${ext}`;
       await engine.writeFile(c.inName, await fetchFile(c.file));
-    }
+    }));
 
     let usedAudio = true;
     let usedFastPath = false;
