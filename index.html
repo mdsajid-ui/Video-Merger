@@ -430,8 +430,12 @@ import { fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist
 async function downloadWithProgress(url, mimeType, onProgress) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText} fetching ${url}`);
-  const total = parseInt(resp.headers.get('content-length') || '0', 10);
-  if (!total || !resp.body) {
+  const headerLen = parseInt(resp.headers.get('content-length') || '0', 10);
+  let expectedTotal = headerLen;
+  if (url.endsWith('.wasm')) {
+    expectedTotal = Math.max(headerLen, 32129114);
+  }
+  if (!resp.body) {
     const blob = await resp.blob();
     return URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: mimeType }));
   }
@@ -444,11 +448,19 @@ async function downloadWithProgress(url, mimeType, onProgress) {
     chunks.push(value);
     received += value.length;
     if (onProgress) {
-      onProgress(received, total);
+      const calcTotal = Math.max(expectedTotal, received);
+      onProgress(received, calcTotal);
     }
   }
   const blob = new Blob(chunks, { type: mimeType });
   return URL.createObjectURL(blob);
+}
+
+async function getWorkerBlobURL() {
+  const resp = await fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js');
+  let code = await resp.text();
+  code = code.replaceAll('./', 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/');
+  return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
 }
 
 const dropzone = document.getElementById('dropzone');
@@ -681,10 +693,8 @@ async function loadFFmpeg(){
   if(ffmpeg) return ffmpeg;
   if(ffmpegLoading) return ffmpegLoading;
   ffmpegLoading = (async () => {
-    const classWorkerURL = await downloadWithProgress(
-      'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js',
-      'text/javascript'
-    );
+    statusText.textContent = 'Loading worker…';
+    const classWorkerURL = await getWorkerBlobURL();
 
     const wantsMulti = detectEngineMode() === 'multi';
     if(wantsMulti){
@@ -696,7 +706,7 @@ async function loadFFmpeg(){
           `${baseURL}/ffmpeg-core.wasm`,
           'application/wasm',
           (loaded, total) => {
-            const pct = Math.round((loaded / total) * 100);
+            const pct = Math.min(100, Math.round((loaded / total) * 100));
             const mb = (loaded / 1048576).toFixed(1);
             const totalMb = (total / 1048576).toFixed(1);
             barFill.style.width = pct + '%';
@@ -707,6 +717,8 @@ async function loadFFmpeg(){
         const coreURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
         const workerURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
         statusText.textContent = 'Initializing multi-core WebAssembly…';
+        barFill.style.width = '100%';
+        statusPct.textContent = '100%';
         const loadPromise = multiEngine.load({
           coreURL,
           wasmURL,
@@ -720,6 +732,8 @@ async function loadFFmpeg(){
         engineMode = 'multi';
         updateEngineBadge('multi', 'Multi-core engine active');
         ffmpeg = multiEngine;
+        barFill.style.width = '0%';
+        statusPct.textContent = '0%';
         return ffmpeg;
       } catch (e) {
         console.warn('Multi-core engine failed to load, falling back to single-core:', e);
@@ -736,7 +750,7 @@ async function loadFFmpeg(){
         `${baseURL}/ffmpeg-core.wasm`,
         'application/wasm',
         (loaded, total) => {
-          const pct = Math.round((loaded / total) * 100);
+          const pct = Math.min(100, Math.round((loaded / total) * 100));
           const mb = (loaded / 1048576).toFixed(1);
           const totalMb = (total / 1048576).toFixed(1);
           barFill.style.width = pct + '%';
@@ -746,11 +760,17 @@ async function loadFFmpeg(){
       );
       const coreURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
       statusText.textContent = 'Initializing WebAssembly…';
-      await singleEngine.load({
+      barFill.style.width = '100%';
+      statusPct.textContent = '100%';
+      const loadPromise = singleEngine.load({
         coreURL,
         wasmURL,
         classWorkerURL,
       });
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Single-core engine initialization timed out')), 25000)
+      );
+      await Promise.race([loadPromise, timeout]);
     } catch (err) {
       statusText.textContent = 'Failed to load engine.';
       throw err;
@@ -758,6 +778,8 @@ async function loadFFmpeg(){
     engineMode = 'single';
     updateEngineBadge('single', 'Single-core engine active');
     ffmpeg = singleEngine;
+    barFill.style.width = '0%';
+    statusPct.textContent = '0%';
     return ffmpeg;
   })();
   try {
