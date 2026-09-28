@@ -395,18 +395,33 @@ if uploaded_files:
             st.warning("⚠️ Please select at least 2 video clips to merge.")
         else:
             with st.spinner("Processing videos with FFmpeg engine..."):
-                prog_bar = st.progress(10)
+                prog_bar = st.progress(0)
+                status_text = st.empty()
                 temp_dir = tempfile.mkdtemp(prefix="video_merger_")
+                CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB chunks for fast disk writes
                 try:
                     file_paths = []
                     for i, f in enumerate(uploaded_files):
+                        fsize_mb = f.size / (1024 * 1024)
+                        status_text.text(f"💾 Saving clip {i+1}/{len(uploaded_files)}: {f.name} ({fsize_mb:.1f} MB)...")
                         ext = os.path.splitext(f.name)[1] or ".mp4"
                         clip_path = os.path.join(temp_dir, f"clip_{i}{ext}")
+                        f.seek(0)
                         with open(clip_path, "wb") as out_f:
-                            out_f.write(f.getvalue())
+                            written = 0
+                            while True:
+                                chunk = f.read(CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                out_f.write(chunk)
+                                written += len(chunk)
+                                # Progress: file saving phase spans 0-30%
+                                file_pct = (i + written / max(f.size, 1)) / len(uploaded_files)
+                                prog_bar.progress(min(int(file_pct * 30), 30))
                         file_paths.append(clip_path)
 
-                    prog_bar.progress(40)
+                    status_text.text("📋 Building merge list...")
+                    prog_bar.progress(35)
 
                     # Create concat list
                     list_path = os.path.join(temp_dir, "concat_list.txt")
@@ -416,12 +431,13 @@ if uploaded_files:
                             lf.write(f"file '{clean_p}'\n")
 
                     output_path = os.path.join(temp_dir, "merged_output.mp4")
-                    prog_bar.progress(60)
+                    prog_bar.progress(40)
 
                     # Check strategy
                     used_fast = False
                     ffmpeg_bin = get_ffmpeg_binary()
                     if "Instant" in mode:
+                        status_text.text("⚡ Attempting instant stream copy...")
                         cmd = [
                             ffmpeg_bin, "-y",
                             "-f", "concat",
@@ -437,7 +453,8 @@ if uploaded_files:
 
                     # Fallback or Re-encode mode
                     if not used_fast:
-                        prog_bar.progress(70)
+                        status_text.text("🔄 Re-encoding clips for compatibility...")
+                        prog_bar.progress(50)
                         # Build scale dimensions based on quality preset
                         scale_opt = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
                         if "1080p" in quality_preset:
@@ -461,6 +478,7 @@ if uploaded_files:
                         ]
                         subprocess.run(cmd, check=True)
 
+                    status_text.text("📦 Finalizing output...")
                     prog_bar.progress(100)
 
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -468,6 +486,7 @@ if uploaded_files:
                         with open(output_path, "rb") as out_file:
                             merged_bytes = out_file.read()
 
+                        status_text.empty()
                         st.success(
                             f"🎉 Merged {len(uploaded_files)} clips successfully! "
                             f"({'Instant Stream Copy' if used_fast else 'Re-encoded Quality'} · {out_size_mb:.1f} MB)"

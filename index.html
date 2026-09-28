@@ -874,10 +874,38 @@ mergeBtn.addEventListener('click', async () => {
       c.inName = `in${i}.${ext}`;
       const sizeMB = (c.file.size / 1048576).toFixed(1);
       statusText.textContent = `Reading clip ${i + 1} of ${clips.length}: ${c.file.name} (${sizeMB} MB)…`;
-      const readPct = Math.round(((i + 0.5) / clips.length) * 100);
-      barFill.style.width = readPct + '%';
-      statusPct.textContent = readPct + '%';
-      await engine.writeFile(c.inName, await fetchFile(c.file));
+
+      // Chunked reading for large files to keep UI responsive and show progress
+      const CHUNK = 16 * 1024 * 1024; // 16 MB chunks
+      if (c.file.size > CHUNK) {
+        const totalChunks = Math.ceil(c.file.size / CHUNK);
+        const parts = [];
+        for (let ch = 0; ch < totalChunks; ch++) {
+          const start = ch * CHUNK;
+          const end = Math.min(start + CHUNK, c.file.size);
+          const slice = c.file.slice(start, end);
+          const buf = await slice.arrayBuffer();
+          parts.push(new Uint8Array(buf));
+          const filePct = (i + (ch + 1) / totalChunks) / clips.length;
+          const readPct = Math.min(100, Math.round(filePct * 100));
+          barFill.style.width = readPct + '%';
+          statusPct.textContent = readPct + '%';
+          statusText.textContent = `Reading clip ${i + 1}/${clips.length}: ${c.file.name} — ${((ch + 1) * CHUNK / 1048576).toFixed(0)}/${sizeMB} MB`;
+          // Yield to keep UI responsive
+          await new Promise(r => setTimeout(r, 0));
+        }
+        // Combine chunks
+        const totalLen = parts.reduce((s, p) => s + p.length, 0);
+        const combined = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const p of parts) { combined.set(p, offset); offset += p.length; }
+        await engine.writeFile(c.inName, combined);
+      } else {
+        const readPct = Math.round(((i + 0.5) / clips.length) * 100);
+        barFill.style.width = readPct + '%';
+        statusPct.textContent = readPct + '%';
+        await engine.writeFile(c.inName, await fetchFile(c.file));
+      }
     }
 
     let usedAudio = true;
